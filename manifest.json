@@ -1,0 +1,20 @@
+{
+  "name": "NAIRARush – Smart Payments",
+  "short_name": "NAIRARush",
+  "description": "Buy airtime, data, pay electricity & cable TV bills, fund betting wallets — fast, reliable payments for Africa.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#1E1B4B",
+  "theme_color": "#1E1B4B",
+  "lang": "en",
+  "dir": "ltr",
+  "categories": ["finance", "utilities", "business"],
+  "icons": [
+    { "src": "icon-192x192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512x512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-192x192-maskable.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "icon-512x512-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
