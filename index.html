@@ -2155,7 +2155,7 @@ window.addEventListener('error', function(e) {
   }
 });
 import{initializeApp}from'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
-import{getAuth,createUserWithEmailAndPassword,signInWithEmailAndPassword,signOut,onAuthStateChanged,sendPasswordResetEmail,GoogleAuthProvider,signInWithPopup,updateProfile,browserSessionPersistence,setPersistence}from'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
+import{getAuth,createUserWithEmailAndPassword,signInWithEmailAndPassword,signOut,onAuthStateChanged,sendPasswordResetEmail,GoogleAuthProvider,signInWithPopup,signInWithRedirect,getRedirectResult,updateProfile,browserSessionPersistence,setPersistence}from'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
 import{getFirestore,doc,setDoc,getDoc,updateDoc,collection,addDoc,query,where,orderBy,limit,getDocs,onSnapshot,serverTimestamp,increment,runTransaction,deleteDoc}from'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 import{getStorage as fbStorage,ref as storageRef,uploadString,getDownloadURL}from'https://www.gstatic.com/firebasejs/10.12.0/firebase-storage.js';
 
@@ -2255,13 +2255,32 @@ window.switchAuthTab=(tab)=>{
   document.getElementById('registerForm').classList.toggle('hidden',tab!=='register');
 };
 function setBtnLoading(id,on,txt=''){const b=document.getElementById(id);if(!b)return;b.disabled=on;b.innerHTML=on?`<span class="btn-spinner"></span> Please wait...`:txt}
+// Friendly translation for Firebase Auth error codes, incl. the operation-not-allowed
+// case which almost always means a sign-in method is disabled in the Firebase Console
+// (Authentication → Sign-in method) rather than a bug in this page.
+function authErrMsg(e){
+  const c=e?.code||'';
+  const map={
+    'auth/invalid-credential':'Incorrect email or password',
+    'auth/user-not-found':'No account found with that email',
+    'auth/wrong-password':'Incorrect email or password',
+    'auth/email-already-in-use':'Email already registered',
+    'auth/too-many-requests':'Too many attempts. Please wait a moment and try again',
+    'auth/network-request-failed':'Network error. Check your internet connection and try again',
+    'auth/operation-not-allowed':'This sign-in method is turned off for this app. Ask the admin to enable it in Firebase Console → Authentication → Sign-in method',
+    'auth/unauthorized-domain':'This website\'s domain isn\'t authorized for sign-in yet. Ask the admin to add it in Firebase Console → Authentication → Settings → Authorized domains',
+    'auth/popup-blocked':'Your browser blocked the sign-in popup. Trying an alternative sign-in method...',
+    'auth/popup-closed-by-user':'Sign-in window was closed before finishing'
+  };
+  return map[c]||e?.message||'Something went wrong';
+}
 window.handleLogin=async()=>{
   const email=document.getElementById('loginEmail').value.trim();
   const pw=document.getElementById('loginPassword').value;
   if(!email||!pw)return showToast('error','Please fill all fields');
   setBtnLoading('loginBtn',true);
   try{await signInWithEmailAndPassword(auth,email,pw)}
-  catch(e){setBtnLoading('loginBtn',false,'Sign In');showToast('error',e.code==='auth/invalid-credential'?'Incorrect email or password':e.message)}
+  catch(e){setBtnLoading('loginBtn',false,'Sign In');showToast('error',authErrMsg(e))}
 };
 window.handleRegister=async()=>{
   const first=document.getElementById('regFirstName').value.trim(),last=document.getElementById('regLastName').value.trim();
@@ -2282,18 +2301,30 @@ window.handleRegister=async()=>{
     if(ref){const rq=query(collection(db,'users'),where('referralCode','==',ref));const rs=await getDocs(rq);if(!rs.empty){await updateDoc(doc(db,'users',rs.docs[0].id),{balance:increment(500),referralCount:increment(1),referralEarned:increment(500)});await updateDoc(doc(db,'users',cred.user.uid),{balance:increment(200)})}}
     await addNotif(cred.user.uid,'🎉 Welcome to NAIRARush!',`Hi ${first}! Your account is ready.`,'success');
     showToast('success','Account created!');
-  }catch(e){setBtnLoading('registerBtn',false,'Create Account');showToast('error',e.code==='auth/email-already-in-use'?'Email already registered':e.message)}
+  }catch(e){setBtnLoading('registerBtn',false,'Create Account');showToast('error',authErrMsg(e))}
 };
+// Creates the Firestore profile doc for a Google sign-in user the first time they show up.
+async function ensureGoogleUserDoc(user){
+  const ud=await getDoc(doc(db,'users',user.uid));
+  if(!ud.exists()){
+    const[fn,...rest]=(user.displayName||'User').split(' ');
+    const rc='NRR'+genId(5),an='9'+Math.floor(Math.random()*900000000+100000000);
+    await setDoc(doc(db,'users',user.uid),{uid:user.uid,firstName:fn,lastName:rest.join(' ')||'',email:user.email,phone:'',country:'NG',role:user.email===ADMIN?'admin':'user',balance:0,totalFunded:0,totalSpent:0,pendingBalance:0,bonus:0,referralCode:rc,referredBy:'',referralCount:0,referralEarned:0,accountNumber:an,agentLevel:'standard',agentCommission:0,isActive:true,kycVerified:false,transactionPIN:'',createdAt:serverTimestamp(),lastSeen:serverTimestamp()});
+  }
+}
 window.handleGoogleAuth=async()=>{
   try{
     const cred=await signInWithPopup(auth,new GoogleAuthProvider());
-    const ud=await getDoc(doc(db,'users',cred.user.uid));
-    if(!ud.exists()){
-      const[fn,...rest]=(cred.user.displayName||'User').split(' ');
-      const rc='NRR'+genId(5),an='9'+Math.floor(Math.random()*900000000+100000000);
-      await setDoc(doc(db,'users',cred.user.uid),{uid:cred.user.uid,firstName:fn,lastName:rest.join(' ')||'',email:cred.user.email,phone:'',country:'NG',role:cred.user.email===ADMIN?'admin':'user',balance:0,totalFunded:0,totalSpent:0,pendingBalance:0,bonus:0,referralCode:rc,referredBy:'',referralCount:0,referralEarned:0,accountNumber:an,agentLevel:'standard',agentCommission:0,isActive:true,kycVerified:false,transactionPIN:'',createdAt:serverTimestamp(),lastSeen:serverTimestamp()});
+    await ensureGoogleUserDoc(cred.user);
+  }catch(e){
+    // Mobile browsers / in-app webviews (common on GitHub Pages links opened from
+    // Facebook/WhatsApp etc.) frequently block the popup. Fall back to a full-page
+    // redirect flow instead of just failing.
+    if(e?.code==='auth/popup-blocked'||e?.code==='auth/popup-closed-by-user'||e?.code==='auth/cancelled-popup-request'){
+      try{await signInWithRedirect(auth,new GoogleAuthProvider());return}catch(e2){showToast('error',authErrMsg(e2));return}
     }
-  }catch(e){showToast('error',e.message)}
+    showToast('error',authErrMsg(e));
+  }
 };
 window.handlePhoneAuth=()=>showToast('info','Phone OTP coming soon');
 window.showForgotPassword=()=>showOverlay(`<div class="sheet-title">Reset Password</div><div class="sheet-sub">Enter your email and we'll send a reset link.</div><div class="form-group"><label class="form-label">Email</label><input type="email" class="form-input" id="resetEmail" placeholder="your@email.com"></div><button class="btn btn-primary" onclick="sendReset()">Send Reset Link</button><p style="font-size:11px;color:var(--text3);margin-top:12px;text-align:center">⚠️ If you don't see the email in your inbox, please check your <strong>Spam / Junk</strong> folder.</p>`);
@@ -2613,7 +2644,7 @@ window.loginWithFingerprint = async () => {
     }
   }
 };
-window.handleLogout=async()=>{_stopInactivityWatcher();await signOut(auth);_s.user=null;_s.userData=null;window._walletListenerStarted=false;document.getElementById('bottomNav').style.display='none';showScreen('auth');setTimeout(()=>{if(typeof checkAndShowFingerprintBtn==='function')checkAndShowFingerprintBtn();},200);showToast('info','Signed out')};
+window.handleLogout=async()=>{_stopInactivityWatcher();await signOut(auth);_s.user=null;_s.userData=null;window._walletListenerStarted=false;window._udListenerStarted=false;document.getElementById('bottomNav').style.display='none';showScreen('auth');setTimeout(()=>{if(typeof checkAndShowFingerprintBtn==='function')checkAndShowFingerprintBtn();},200);showToast('info','Signed out')};
 
 window.handleProfilePicChange=async(input)=>{
   const file=input.files[0];if(!file||!_s.user)return;
@@ -2655,6 +2686,11 @@ window.handleProfilePicChange=async(input)=>{
   reader.readAsDataURL(file);
 };
 
+// Completes a Google sign-in that fell back to signInWithRedirect (see handleGoogleAuth).
+getRedirectResult(auth).then(async(res)=>{
+  if(res&&res.user)await ensureGoogleUserDoc(res.user);
+}).catch((e)=>{ if(e&&e.code&&e.code!=='auth/no-current-user') console.warn('[getRedirectResult]',e.code); });
+
 onAuthStateChanged(auth,async(user)=>{
   window._firebaseReady = true;
   window._firebaseNavigated = true;
@@ -2662,6 +2698,10 @@ onAuthStateChanged(auth,async(user)=>{
   if(user){
     _s.user=user;setBtnLoading('loginBtn',false,'Sign In');
     await loadUD(user.uid);
+    // Start the realtime profile listener right away (not just when the wallet tab is
+    // opened) so balance, name, avatar, and referral info populate as soon as the
+    // Firestore doc is reachable, even on a slow connection.
+    if(!window._udListenerStarted){window._udListenerStarted=true;window._walletListenerStarted=true;listenUD(user.uid);}
     document.getElementById('bottomNav').style.display='flex';
     _startInactivityWatcher();
     if(_s.isAdmin){
@@ -2690,7 +2730,20 @@ async function loadUD(uid){
     try{ await updateDoc(doc(db,'users',uid),{role:'admin'}); }catch(e){ console.warn('[loadUD] role update failed:',e.message); }
   }
 }
-function listenUD(uid){onSnapshot(doc(db,'users',uid),(s)=>{if(s.exists()){_s.userData=s.data();updateUI()}})}
+function listenUD(uid){onSnapshot(doc(db,'users',uid),(s)=>{
+  if(s.exists()){
+    _s.userData=s.data();
+    updateUI();
+    // If the user is sitting on a screen that renders straight from userData (referral
+    // link/code, wallet figures) and it loaded *after* they navigated there, refresh
+    // that screen now instead of leaving it stuck on "Loading...".
+    const cur=document.querySelector('.screen.active');
+    if(cur){
+      if(cur.id==='referral')loadReferralDashboard();
+      if(cur.id==='walletScreen')loadWallet();
+    }
+  }
+})}
 function updateUI(){
   const d=_s.userData;if(!d)return;
   const s=csym(d.country);
@@ -2868,7 +2921,7 @@ window.filterHist=(filter,el)=>{
   loadHist(filter);
 };
 async function checkPaystackKey(){const el=document.getElementById('paystackKeyStatus');if(!el)return;if(window._paystackKey&&window._paystackKey.startsWith('pk_')){el.innerHTML='<span style="color:var(--success-green)">✅ Paystack gateway ready</span>';return;}try{const snap=await getDoc(doc(db,'settings','apis'));const a=snap.exists()?snap.data():{};const key=a.paystackPub||a.paystackPublic||'';if(key&&key.startsWith('pk_')){window._paystackKey=key;el.innerHTML='<span style="color:var(--success-green)">✅ Paystack gateway ready</span>';}else{el.innerHTML='<span style="color:var(--danger)">⚠ Paystack key not set. Admin → API Management</span>';}}catch(e){el.innerHTML='<span style="color:var(--danger)">Gateway error</span>';}}
-window.initPaystackPayment=async()=>{const amount=parseFloat(document.getElementById('paystackAmount').value)||0;if(amount<100)return showToast('error','Minimum ₦100');if(!window._paystackKey||!window._paystackKey.startsWith('pk_')){await checkPaystackKey();}if(!window._paystackKey||!window._paystackKey.startsWith('pk_')){return showToast('error','Paystack not set up. Use Manual Transfer or contact admin.');}const email=_s.userData?.email;if(!email)return showToast('error','Please log in again');const ref='NRR'+Date.now()+genId(6);if(!window.PaystackPop){try{await new Promise((res,rej)=>{const sc=document.createElement('script');sc.src='https://js.paystack.co/v1/inline.js';sc.onload=res;sc.onerror=rej;document.head.appendChild(sc);});}catch(e){return showToast('error','Could not load Paystack. Check internet.');}}const onSuccess=async(reference)=>{showToast('info','Processing payment...');try{await updateDoc(doc(db,'users',_s.user.uid),{balance:increment(amount),totalFunded:increment(amount)});const txId=genId(12);await setDoc(doc(db,'transactions',txId),{id:txId,userId:_s.user.uid,type:'fund_approved',status:'success',amount,description:'Wallet Funded via Paystack',reference:reference,createdAt:serverTimestamp()});addNotif(_s.user.uid,'✅ Wallet Funded!','₦'+amount.toLocaleString()+' via Paystack','success').catch(()=>{});showToast('success','₦'+amount.toLocaleString()+' added to your wallet!');navigateTo('home');}catch(e){showToast('error','Payment done but credit failed. Ref: '+reference);}};try{const handler=window.PaystackPop.setup({key:window._paystackKey,email,amount:Math.round(amount*100),currency:'NGN',ref,channels:['card','bank','ussd','qr','mobile_money','bank_transfer'],callback:(resp)=>{onSuccess(resp.reference||ref);},onClose:()=>{showToast('info','Payment window closed');}});handler.openIframe();}catch(e){showToast('error','Paystack error: '+e.message);console.error(e);}};
+window.initPaystackPayment=async()=>{const amount=parseFloat(document.getElementById('paystackAmount').value)||0;if(amount<100)return showToast('error','Minimum ₦100');if(!window._paystackKey||!window._paystackKey.startsWith('pk_')){await checkPaystackKey();}if(!window._paystackKey||!window._paystackKey.startsWith('pk_')){return showToast('error','Paystack not set up. Use Manual Transfer or contact admin.');}const email=_s.userData?.email||_s.user?.email;if(!email)return showToast('error','Please log in again');const ref='NRR'+Date.now()+genId(6);if(!window.PaystackPop){try{await new Promise((res,rej)=>{const sc=document.createElement('script');sc.src='https://js.paystack.co/v1/inline.js';sc.onload=res;sc.onerror=rej;document.head.appendChild(sc);});}catch(e){return showToast('error','Could not load Paystack. Check internet.');}}const onSuccess=async(reference)=>{showToast('info','Processing payment...');try{await updateDoc(doc(db,'users',_s.user.uid),{balance:increment(amount),totalFunded:increment(amount)});const txId=genId(12);await setDoc(doc(db,'transactions',txId),{id:txId,userId:_s.user.uid,type:'fund_approved',status:'success',amount,description:'Wallet Funded via Paystack',reference:reference,createdAt:serverTimestamp()});addNotif(_s.user.uid,'✅ Wallet Funded!','₦'+amount.toLocaleString()+' via Paystack','success').catch(()=>{});showToast('success','₦'+amount.toLocaleString()+' added to your wallet!');navigateTo('home');}catch(e){showToast('error','Payment done but credit failed. Ref: '+reference);}};try{const handler=window.PaystackPop.setup({key:window._paystackKey,email,amount:Math.round(amount*100),currency:'NGN',ref,channels:['card','bank','ussd','qr','mobile_money','bank_transfer'],callback:(resp)=>{onSuccess(resp.reference||ref);},onClose:()=>{showToast('info','Payment window closed');}});handler.openIframe();}catch(e){showToast('error','Paystack error: '+e.message);console.error(e);}};
 
 
 window.goToFundStep2=()=>{
@@ -3057,7 +3110,13 @@ window.approveFundRequest=async(reqId,userId,amount)=>{
     // Credit user wallet
     await runTransaction(db,async(t)=>{
       const uRef=doc(db,'users',userId);const us=await t.get(uRef);
-      t.update(uRef,{balance:increment(amount),totalFunded:increment(amount),pendingBalance:increment(-Math.max(0,us.data().pendingBalance||0))});
+      if(us.exists()){
+        const curPending=us.data().pendingBalance||0;
+        t.update(uRef,{balance:increment(amount),totalFunded:increment(amount),pendingBalance:increment(-Math.max(0,curPending))});
+      }else{
+        // User profile doc is missing entirely — create it instead of crashing so the credit still lands.
+        t.set(uRef,{uid:userId,balance:amount,totalFunded:amount,pendingBalance:0},{merge:true});
+      }
     });
     // Update the pending transaction to success
     const txQ=query(collection(db,'transactions'),where('userId','==',userId),where('reference','==',reqId));
@@ -3077,8 +3136,8 @@ window.rejectFundRequest=async(reqId,userId,amount)=>{
     // Update tx to failed
     const txQ=query(collection(db,'transactions'),where('userId','==',userId),where('reference','==',reqId));
     const txS=await getDocs(txQ);txS.forEach(d=>updateDoc(doc(db,'transactions',d.id),{status:'failed'}));
-    // Refund pending balance
-    await updateDoc(doc(db,'users',userId),{pendingBalance:increment(-Math.max(0,amount))});
+    // Refund pending balance (setDoc+merge so this can't fail if the user doc is missing)
+    await setDoc(doc(db,'users',userId),{pendingBalance:increment(-Math.max(0,amount))},{merge:true});
     await addNotif(userId,'❌ Funding Request Rejected',`Your payment of ₦${Number(amount).toLocaleString()} was rejected.${reason?' Reason: '+reason:' Contact support for assistance.'}`,'warning');
     showToast('info','Request rejected');
     loadFundingRequests('pending');
@@ -6470,8 +6529,12 @@ function listenPendingKYC() {
 // REFERRAL DASHBOARD SYSTEM
 // ════════════════════════════════
 window.loadReferralDashboard = async () => {
-  if (!_s.user || !_s.userData) return;
-  const code = _s.userData.referralCode || 'NRR' + _s.user.uid.slice(0,5).toUpperCase();
+  if (!_s.user) return;
+  // Don't wait on the Firestore profile doc to render the link/code — the Firebase Auth
+  // uid is available instantly, so show a working link right away. If the real
+  // referralCode arrives later via the live listener, updateUI()/this function re-run
+  // will replace it automatically.
+  const code = _s.userData?.referralCode || 'NRR' + _s.user.uid.slice(0,5).toUpperCase();
   const link = window.location.origin + window.location.pathname.replace(/\/[^/]*$/, '/') + '?ref=' + code;
   const el = document.getElementById('refCode'); if(el) el.textContent = code;
   const ld = document.getElementById('refLinkDisplay'); if(ld) ld.textContent = link;
