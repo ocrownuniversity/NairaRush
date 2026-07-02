@@ -2748,6 +2748,11 @@ function listenUD(uid){onSnapshot(doc(db,'users',uid),(s)=>{
     }
   }
 })}
+function updateGreeting(){
+  const el=document.getElementById('homeGreeting');if(!el)return;
+  const h=new Date().getHours();
+  el.textContent=h<12?'Good morning 👋':h<17?'Good afternoon 👋':h<21?'Good evening 👋':'Good night 👋';
+}
 function updateUI(){
   const d=_s.userData;if(!d)return;
   const s=csym(d.country);
@@ -2760,7 +2765,7 @@ function updateUI(){
   document.getElementById('homeBalVal').textContent=bal;
   document.getElementById('homeTotalIn').textContent=fmt(d.totalFunded,s);
   document.getElementById('homeTotalOut').textContent=fmt(d.totalSpent,s);
-  const h=new Date().getHours();document.getElementById('homeGreeting').textContent=h<12?'Good morning 👋':h<17?'Good afternoon 👋':'Good evening 👋';
+  updateGreeting();
   document.getElementById('profileName').textContent=d.firstName+' '+d.lastName;
   document.getElementById('profileEmail').textContent=d.email;
   document.getElementById('profileLevel').textContent='⭐ '+(d.agentLevel==='bronze'?'Bronze Agent':d.agentLevel==='silver'?'Silver Agent':d.agentLevel==='gold'?'Gold Agent':'Standard User');
@@ -2781,7 +2786,7 @@ function updateUI(){
   document.getElementById('agentLvl').textContent='⭐ '+(d.agentLevel==='bronze'?'Bronze Agent':d.agentLevel==='silver'?'Silver Agent':d.agentLevel==='gold'?'Gold Agent':'New Agent');
 }
 window.toggleBal=()=>{_s.balHidden=!_s.balHidden;document.getElementById('homeBalVal').textContent=_s.balHidden?'••••••':Number(_s.userData?.balance||0).toLocaleString('en-NG',{minimumFractionDigits:2});document.getElementById('balEye').textContent=_s.balHidden?'🙈':'👁'};
-async function loadHome(){if(!_s.user)return;listenUD(_s.user.uid);loadRecentTx()}
+async function loadHome(){if(!_s.user)return;updateGreeting();listenUD(_s.user.uid);loadRecentTx()}
 async function loadRecentTx(){
   if(!_s.user)return;
   const c=document.getElementById('recentTx');
@@ -7538,6 +7543,10 @@ if ('serviceWorker' in navigator) {
     });
   });
 }
+// Keep the home greeting accurate even if the app is left open for hours
+// (installed PWAs often stay alive in the background) instead of only being
+// computed once when user data first loads.
+setInterval(updateGreeting, 60000);
 // ── Connectivity banner (independent of service worker support) ──
 function updateOnlineStatus(){
   const b=document.getElementById('offlineBanner');
