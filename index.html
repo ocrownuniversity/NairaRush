@@ -328,6 +328,7 @@ select.form-input{cursor:pointer;-webkit-appearance:none;background-image:url("d
 .sum-lbl{font-size:13px;color:var(--text2)}
 .sum-val{font-size:12px;font-weight:600;color:var(--text)}
 .chip{display:inline-flex;align-items:center;background:var(--bg);border-radius:99px;padding:5px 10px;font-size:11px;font-weight:500;color:var(--text2);cursor:pointer;border:1.5px solid var(--border);white-space:nowrap;transition:all .15s}
+.chip.selected{background:var(--green-xl,#ECFDF5);border-color:var(--green,#10B981);color:var(--green,#10B981);font-weight:700}
 .chip.active{background:var(--primary-light);color:var(--primary);border-color:var(--primary)}
 .chip-row{display:flex;gap:6px;flex-wrap:nowrap;overflow-x:auto;padding-bottom:3px;margin-bottom:12px;scrollbar-width:none}
 .chip-row::-webkit-scrollbar{display:none}
@@ -682,6 +683,7 @@ textarea.form-input{resize:none}
         <div class="action-item" onclick="navigateTo('historyScreen')"><div class="action-icon ai-pink">📋</div><div class="action-label">History</div></div>
         <div class="action-item" onclick="navigateTo('transferScreen')"><div class="action-icon ai-yellow">💸</div><div class="action-label">Transfer</div></div>
         <div class="action-item" onclick="navigateTo('schoolPinScreen')"><div class="action-icon ai-purple">🎓</div><div class="action-label">School PIN</div></div>
+        <div class="action-item" onclick="navigateTo('epinScreen')"><div class="action-icon" style="background:#FEF3C7">🖨️</div><div class="action-label">Recharge Card</div></div>
         <div class="action-item" onclick="navigateTo('kycScreen')"><div class="action-icon" style="background:#E0F2FE">🪪</div><div class="action-label">KYC</div></div>
         <div class="action-item" onclick="navigateTo('supportChatScreen')"><div class="action-icon" style="background:#F0FDF4">🎧</div><div class="action-label">Support</div></div>
         <div class="action-item" onclick="navigateTo('rechargeScreen')"><div class="action-icon" style="background:#FFF7E0">💱</div><div class="action-label">Recharge</div></div>
@@ -1117,6 +1119,26 @@ textarea.form-input{resize:none}
     <div class="form-group"><label class="form-label">Phone (for delivery)</label><input type="tel" class="form-input" id="schoolPhone" placeholder="08012345678"></div>
     <div class="form-group"><label class="form-label">Email (for delivery)</label><input type="email" class="form-input" id="schoolEmail" placeholder="your@email.com"></div>
     <button class="btn btn-primary" onclick="proceedToPIN('schoolpin')">Continue</button>
+  </div>
+</div>
+
+<!-- RECHARGE CARD PRINTING (EPIN) -->
+<div class="screen svc-form" id="epinScreen">
+  <div style="background:linear-gradient(145deg,#1E1B4B,#3B3582);padding:48px 16px 20px">
+    <div style="display:flex;align-items:center;gap:9px;margin-bottom:14px"><button class="nav-back white" onclick="goBack()">←</button><div style="font-family:var(--font-display);font-size:16px;font-weight:700;color:white">Recharge Card Printing</div></div>
+    <div style="font-size:10px;color:rgba(255,255,255,.5);margin-bottom:8px;font-weight:600;letter-spacing:.5px">SELECT NETWORK</div>
+    <div class="provider-grid" id="epinProv"></div>
+  </div>
+  <div class="svc-form-body">
+    <div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:8px">EPIN Value</div>
+    <div class="chip-row" id="epinValueChips">
+      <div class="chip" onclick="selEpinValue(100,this)">₦100</div>
+      <div class="chip" onclick="selEpinValue(200,this)">₦200</div>
+      <div class="chip" onclick="selEpinValue(500,this)">₦500</div>
+    </div>
+    <div class="form-group"><label class="form-label">Quantity</label><input type="number" class="form-input" id="epinQty" value="1" min="1" max="100" oninput="updateEpinTotal()"></div>
+    <div id="epin-total" style="font-size:12px;color:var(--text2);margin-bottom:8px"></div>
+    <button class="btn btn-primary" onclick="proceedToPIN('epin')">Continue</button>
   </div>
 </div>
 
@@ -2667,7 +2689,17 @@ onAuthStateChanged(auth,async(user)=>{
 });
 
 // USER DATA
-async function loadUD(uid){const s=await getDoc(doc(db,'users',uid));if(s.exists()){_s.userData=s.data();_s.isAdmin=_s.userData.role==='admin'||_s.user?.email===ADMIN;if(_s.isAdmin&&_s.userData.role!=='admin')await updateDoc(doc(db,'users',uid),{role:'admin'})}}
+async function loadUD(uid){
+  try{
+    const s=await getDoc(doc(db,'users',uid));
+    if(s.exists()) _s.userData=s.data();
+  }catch(e){ console.warn('[loadUD] read error:',e.message); }
+  const emailMatch = (_s.user?.email||'').trim().toLowerCase() === ADMIN.toLowerCase();
+  _s.isAdmin = (_s.userData?.role==='admin') || emailMatch;
+  if(_s.isAdmin && _s.userData && _s.userData.role!=='admin'){
+    try{ await updateDoc(doc(db,'users',uid),{role:'admin'}); }catch(e){ console.warn('[loadUD] role update failed:',e.message); }
+  }
+}
 function listenUD(uid){onSnapshot(doc(db,'users',uid),(s)=>{if(s.exists()){_s.userData=s.data();updateUI()}})}
 function updateUI(){
   const d=_s.userData;if(!d)return;
@@ -3147,8 +3179,15 @@ function populateProviders(){
     {n:'JAMB',logo:mkLogo('JAMB','#006400'),id:'jamb'},
     {n:'NABTEB',logo:mkLogo('NABT','#8B0000'),id:'nabteb'}
   ];
+  // EPIN networks — ClubKonnect's APIEPINV1 only supports these 4 (01=MTN,02=Glo,03=Etisalat,04=Airtel)
+  const EP=[
+    {n:'MTN',logo:mkLogo('MTN','#FFCC00','#000'),id:'mtn'},
+    {n:'Glo',logo:mkLogo('GLO','#008000'),id:'glo'},
+    {n:'9mobile',logo:mkLogo('9MOB','#007B5E'),id:'9mobile'},
+    {n:'Airtel',logo:mkLogo('AIR','#E40000'),id:'airtel'}
+  ];
   const rp=(id,items)=>{const el=document.getElementById(id);if(!el)return;el.innerHTML=items.map((p,i)=>`<div class="prov-opt ${i===0?'selected':''}" onclick="selProv('${id}','${p.id}',this)">${p.logo}<span class="prov-label">${p.n}</span></div>`).join('');_s.selProv[id]=items[0].id};
-  rp('airtimeProv',AT);rp('dataProv',DT);rp('elecProv',EL);rp('cableProv',CB);rp('bettingProv',BT);rp('schoolProv',SC);
+  rp('airtimeProv',AT);rp('dataProv',DT);rp('elecProv',EL);rp('cableProv',CB);rp('bettingProv',BT);rp('schoolProv',SC);rp('epinProv',EP);
   // Load live data plans from ClubKonnect for default network (MTN)
   loadCKDataPlans('mtn');
   loadCKCablePackages('dstv');
@@ -3166,6 +3205,8 @@ window.selProv=(grid,id,el)=>{document.querySelectorAll(`#${grid} .prov-opt`).fo
   if(grid==='bettingProv') verifyBettingCustomer();
 };
 window.selPlan=(el,name,price)=>{el.closest('.data-plans').querySelectorAll('.plan-opt').forEach(p=>p.classList.remove('selected'));el.classList.add('selected');_s.selPlan={name,price}};
+window.selEpinValue=(val,el)=>{el.closest('#epinValueChips').querySelectorAll('.chip').forEach(c=>c.classList.remove('selected'));el.classList.add('selected');_s.selPlan={name:`₦${val} EPIN`,price:val};updateEpinTotal()};
+window.updateEpinTotal=()=>{const totEl=document.getElementById('epin-total');if(!totEl)return;const qty=parseInt(document.getElementById('epinQty')?.value||'1');if(!_s.selPlan){totEl.textContent='';return}const total=_s.selPlan.price*qty;totEl.innerHTML=`Total: <strong style="color:var(--primary)">₦${total.toLocaleString()}</strong> (₦${_s.selPlan.price.toLocaleString()} × ${qty})`};
 
 // PIN & TRANSACTIONS
 window.proceedToPIN=async(svc)=>{
@@ -3176,6 +3217,7 @@ window.proceedToPIN=async(svc)=>{
   else if(svc==='betting'){const cid=document.getElementById('bettingCustomerId').value;const am=document.getElementById('bettingAmt').value;const bc=_s.selProv['bettingProv']||'product-nairabet';if(!cid||!am)return showToast('error','Fill all fields');_s.pendingData={type:'betting',customerId:cid,amount:parseFloat(am),provider:bc,description:`Betting Wallet Funding – ${cid}`};sum=`<div class="sum-row"><span class="sum-lbl">Customer ID</span><span class="sum-val">${cid}</span></div><div class="sum-row"><span class="sum-lbl">Company</span><span class="sum-val">${bc.replace(/^prod(uct)?-|^prd-/,'').replace(/-/g,' ').toUpperCase()}</span></div><div class="sum-row"><span class="sum-lbl">Amount</span><span class="sum-val" style="color:var(--primary)">₦${parseFloat(am).toLocaleString()}</span></div>`}
   else if(svc==='cabletv'){const cd=document.getElementById('cableCardNo').value;const ph=document.getElementById('cablePhone')?.value||'';if(!cd||!_s.selPlan)return showToast('error','Fill all fields');_s.pendingData={type:'cabletv',cardNo:cd,phone:ph,amount:_s.selPlan.price,provider:_s.selProv['cableProv']||'dstv',plan:_s.selPlan.name,planCode:_s.selPlan.code||'',description:`${_s.selPlan.name} Cable – ${cd}`};sum=`<div class="sum-row"><span class="sum-lbl">Card No</span><span class="sum-val">${cd}</span></div><div class="sum-row"><span class="sum-lbl">Package</span><span class="sum-val">${_s.selPlan.name}</span></div><div class="sum-row"><span class="sum-lbl">Amount</span><span class="sum-val" style="color:var(--primary)">₦${_s.selPlan.price.toLocaleString()}</span></div>`}
   else if(svc==='schoolpin'){const qty=parseInt(document.getElementById('schoolPinQty').value);const ph=document.getElementById('schoolPhone').value;const ex=_s.selProv['schoolProv']||'waec';if(!ph)return showToast('error','Fill all fields');if(!_s.selPlan)return showToast('error','Price not loaded for this exam body yet');const tot=_s.selPlan.price*qty;_s.pendingData={type:'schoolpin',exam:ex,jambType:ex==='jamb'?(_s.selPlan.code||'utme-no-mock'):'',quantity:qty,phone:ph,amount:tot,planCode:_s.selPlan.code||'',description:`${ex.toUpperCase()} PIN x${qty}`};sum=`<div class="sum-row"><span class="sum-lbl">Exam</span><span class="sum-val">${ex.toUpperCase()}</span></div><div class="sum-row"><span class="sum-lbl">Qty</span><span class="sum-val">${qty}</span></div><div class="sum-row"><span class="sum-lbl">Price/PIN</span><span class="sum-val">₦${_s.selPlan.price.toLocaleString()}</span></div><div class="sum-row"><span class="sum-lbl">Total</span><span class="sum-val" style="color:var(--primary)">₦${tot.toLocaleString()}</span></div>`}
+  else if(svc==='epin'){const qty=parseInt(document.getElementById('epinQty').value)||1;const net=_s.selProv['epinProv']||'mtn';if(!_s.selPlan)return showToast('error','Select an EPIN value');if(qty<1||qty>100)return showToast('error','Quantity must be between 1 and 100');const tot=_s.selPlan.price*qty;_s.pendingData={type:'epin',provider:net,value:_s.selPlan.price,quantity:qty,amount:tot,description:`${net.toUpperCase()} Recharge Card x${qty} (₦${_s.selPlan.price})`};sum=`<div class="sum-row"><span class="sum-lbl">Network</span><span class="sum-val">${net.toUpperCase()}</span></div><div class="sum-row"><span class="sum-lbl">Value</span><span class="sum-val">₦${_s.selPlan.price}</span></div><div class="sum-row"><span class="sum-lbl">Quantity</span><span class="sum-val">${qty}</span></div><div class="sum-row"><span class="sum-lbl">Total</span><span class="sum-val" style="color:var(--primary)">₦${tot.toLocaleString()}</span></div>`}
   else if(svc==='transfer'){
     const am=parseFloat(document.getElementById('transferAmt').value)||0;
     const transferTypeVal=document.getElementById('transferType').value;
@@ -3241,6 +3283,8 @@ waec            : 'APIWAECV1.asp',
 waecPlans       : 'APIWAECPackagesV2.asp',
 jamb            : 'APIJAMBV1.asp',
 jambPlans       : 'APIJAMBPackagesV2.asp',
+epin            : 'APIEPINV1.asp',
+epinDiscount    : 'APIEPINDiscountV2.asp',
 status          : 'APIQueryV1.asp'
 }
 };
@@ -3331,6 +3375,9 @@ return parsed;
 }
 function isApiSuccess(res){
 if(!res) return false;
+// EPIN success responses have no status/statuscode field — just a
+// populated TXN_EPIN array of generated PINs.
+if(Array.isArray(res.TXN_EPIN) && res.TXN_EPIN.length>0) return true;
 const st   = String(res.status||res.Status||res.statuscode||res.StatusCode||res.code||'').toLowerCase();
 const sc   = String(res.statuscode||res.StatusCode||'').toLowerCase();
 const msg  = String(res.message||res.Message||res.description||'').toLowerCase();
@@ -3857,6 +3904,26 @@ Amount       : amount,
 RequestID    : reqId
 },{ type:'data', amount, userId:_s.user?.uid||'' });
 }
+// EPIN (Recharge Card Printing) network codes — confirmed from ClubKonnect's
+// own live "Airtime Recharge PIN (EPIN) API" docs: 01=MTN, 02=Glo,
+// 03=Etisalat, 04=Airtel. NOTE this differs from the airtime endpoint's
+// codes (which use 03 for t2mobile) — EPIN has its own numbering.
+const NBS_EPIN_NET_IDS = {
+'MTN':'01','mtn':'01',
+'GLO':'02','glo':'02','Glo':'02',
+'ETISALAT':'03','etisalat':'03','Etisalat':'03','9mobile':'03','9MOBILE':'03',
+'AIRTEL':'04','airtel':'04','Airtel':'04'
+};
+async function apiEpin(network, value, quantity, reqId){
+const netId = NBS_EPIN_NET_IDS[network] || NBS_EPIN_NET_IDS[String(network).toUpperCase()] || network;
+console.log('[API] EPIN MobileNetwork:', network, '->', netId, ' Value:', value, ' Quantity:', quantity);
+return apiFetch('epin',{
+MobileNetwork:netId,
+Value:value,
+Quantity:quantity,
+RequestID:reqId
+},{ type:'epin', amount:value*quantity, userId:_s.user?.uid||'' });
+}
 async function apiCable(smartcard, provider, planCode, amount, reqId, phone){
 return apiFetch('cable',{
 CableTV    : provider,
@@ -4276,6 +4343,8 @@ async function executeCKVTU(d, tid){
     apiResult = await apiElectricity(d.meter||'', d.provider||'', d.meterType||'prepaid', d.amount, d.phone||'', ref);
   } else if(d.type==='betting'){
     apiResult = await apiBetting(d.provider||'product-nairabet', d.customerId||'', d.amount, ref);
+  } else if(d.type==='epin'){
+    apiResult = await apiEpin(nbsNet, d.value, d.quantity, ref);
   } else if(d.type==='schoolpin'){
     const examType = (d.exam||'WAEC').toUpperCase();
     if(examType==='JAMB'){
@@ -4351,7 +4420,7 @@ async function confirmTx(pin){
       ].map(i=>`<div class="receipt-row"><span class="r-label">${i.l}</span><span class="r-val">${i.v}</span></div>`).join('');
     } else {
       // ── VTU / BANK TRANSFER TRANSACTIONS ──
-      const VTU_TYPES = ['airtime','data','electricity','cabletv','schoolpin','betting'];
+      const VTU_TYPES = ['airtime','data','electricity','cabletv','schoolpin','betting','epin'];
       const isVTU = VTU_TYPES.includes(d.type);
       // Revenue margin: transfers use the explicit sendAmount/amount fee.
       // VTU purchases (airtime/data/electricity/cable/betting/schoolpin) use
@@ -4436,7 +4505,7 @@ async function confirmTx(pin){
       }
 
       // 4. Agent commission
-      if(ud.agentLevel&&ud.agentLevel!=='standard'){const r={airtime:0.015,data:0.02,electricity:0.005,cabletv:0.01,schoolpin:0.02,betting:0.005};const comm=(r[d.type]||0.01)*d.amount;if(comm>0)await updateDoc(doc(db,'users',_s.user.uid),{agentCommission:increment(comm)})}
+      if(ud.agentLevel&&ud.agentLevel!=='standard'){const r={airtime:0.015,data:0.02,electricity:0.005,cabletv:0.01,schoolpin:0.02,betting:0.005,epin:0.01};const comm=(r[d.type]||0.01)*d.amount;if(comm>0)await updateDoc(doc(db,'users',_s.user.uid),{agentCommission:increment(comm)})}
 
       await addNotif(_s.user.uid,'✅ Transaction Successful',`${d.description} completed successfully.`,'success');
       navigateTo('successScreen');
@@ -4448,8 +4517,16 @@ async function confirmTx(pin){
       const _rs=csym(_s.userData?.country);
       // Show token/PIN if returned (e.g. electricity token, WAEC pin)
       const ckRaw = ckResult?.data||{};
-      const token = ckRaw.TOKEN||ckRaw.token||ckRaw.Pin||ckRaw.PIN||ckRaw.pin||'';
-      const extraRows = token ? [{l:'Token/PIN', v: token}] : [];
+      let extraRows = [];
+      if(d.type==='epin' && Array.isArray(ckRaw.TXN_EPIN)){
+        extraRows = ckRaw.TXN_EPIN.map((p,i)=>({
+          l:`PIN ${i+1} (S/N ${p.sno||p.SNO||'—'})`,
+          v: p.pin||p.PIN||'—'
+        }));
+      } else {
+        const token = ckRaw.TOKEN||ckRaw.token||ckRaw.Pin||ckRaw.PIN||ckRaw.pin||'';
+        extraRows = token ? [{l:'Token/PIN', v: token}] : [];
+      }
       document.getElementById('successReceipt').innerHTML=[
         {l:'Service',v:d.description},
         {l:'Amount',v:fmt(d.amount,_rs)},
@@ -5394,6 +5471,8 @@ const CK_DEFAULT_ENDPOINTS = {
   waecPlans:        'APIWAECPackagesV2.asp',
   jamb:             'APIJAMBV1.asp',
   jambPlans:        'APIJAMBPackagesV2.asp',
+  epin:             'APIEPINV1.asp',
+  epinDiscount:     'APIEPINDiscountV2.asp',
   status:           'APIQueryV1.asp',
 };
 
