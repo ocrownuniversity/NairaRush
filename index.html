@@ -277,7 +277,7 @@ select.form-input{cursor:pointer;-webkit-appearance:none;background-image:url("d
 .wallet-card-amount{font-family:var(--font-display);font-size:28px;font-weight:700;letter-spacing:-.5px;margin-bottom:15px}
 .wallet-card-row{display:flex;justify-content:space-between;align-items:flex-end}
 .wallet-card-acct strong{display:block;font-size:13px;letter-spacing:2px;margin-top:2px}
-.wallet-btns{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;padding:14px 12px}
+.wallet-btns{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:6px;padding:14px 12px}
 .wallet-btn{background:white;border-radius:12px;padding:12px 7px;text-align:center;cursor:pointer;box-shadow:var(--shadow);transition:transform .2s}
 .wallet-btn:active{transform:scale(.95)}
 .wallet-btn-icon{font-size:18px;margin-bottom:3px}
@@ -531,6 +531,7 @@ textarea.form-input{resize:none}
 </head>
 <body>
 <div id="app">
+<div id="offlineBanner" style="display:none;position:absolute;top:0;left:0;right:0;z-index:9999;background:var(--danger);color:white;text-align:center;font-size:12px;font-weight:600;padding:8px 12px;">📡 You're offline — some features won't work until you reconnect</div>
 <div class="toast-container" id="toastContainer"></div>
 
 <!-- ══ SPLASH ══ -->
@@ -731,6 +732,7 @@ textarea.form-input{resize:none}
   <div class="wallet-btns">
     <div class="wallet-btn" onclick="navigateTo('fundWallet')"><div class="wallet-btn-icon">➕</div><div class="wallet-btn-label">Fund</div></div>
     <div class="wallet-btn" onclick="navigateTo('transferScreen')"><div class="wallet-btn-icon">💸</div><div class="wallet-btn-label">Transfer</div></div>
+    <div class="wallet-btn" onclick="showReceiveSheet()"><div class="wallet-btn-icon">📥</div><div class="wallet-btn-label">Receive</div></div>
     <div class="wallet-btn" onclick="showWithdrawSheet()"><div class="wallet-btn-icon">🏦</div><div class="wallet-btn-label">Withdraw</div></div>
   </div>
   <div style="padding:0 12px 20px">
@@ -1180,8 +1182,9 @@ textarea.form-input{resize:none}
 
 <!-- HISTORY -->
 <div class="screen" id="historyScreen">
-  <div class="navbar light" style="padding-top:42px"><button class="nav-back" onclick="goBack()">←</button><div class="nav-title">Transaction History</div><div style="width:37px"></div></div>
+  <div class="navbar light" style="padding-top:42px"><button class="nav-back" onclick="goBack()">←</button><div class="nav-title">Transaction History</div><button class="nav-action" onclick="exportHistoryCSV()" title="Export CSV">📤</button></div>
   <div style="padding:10px 12px 0">
+    <input type="text" id="histSearch" placeholder="🔍 Search by description or reference..." oninput="searchHist(this.value)" style="width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--border);font-size:13px;font-family:var(--font);margin-bottom:10px;background:var(--surface)">
     <div class="chip-row" id="histFilter">
       <div class="chip active" onclick="filterHist('all',this)">All</div>
       <div class="chip" onclick="filterHist('airtime',this)">Airtime</div>
@@ -1227,6 +1230,7 @@ textarea.form-input{resize:none}
       <div style="display:flex;gap:8px;justify-content:center">
         <button class="btn btn-primary btn-sm" onclick="copyRefLink()">📋 Copy Link</button>
         <button class="btn btn-outline btn-sm" onclick="shareReferral()">📤 Share</button>
+        <button class="btn btn-outline btn-sm" onclick="showReferralQR()">▦ QR</button>
       </div>
     </div>
     <!-- Friends List -->
@@ -2907,6 +2911,7 @@ async function loadHist(filter='all'){
     }catch(e2){}
     // Apply filter
     _s.allTx=txs;
+    _s.curHistFilter=filter;
     const filtered=filter==='all'?txs:txs.filter(t=>t.type===filter||(filter==='fund'&&(t.type==='fund'||t.type==='fund_approved')));
     if(!filtered.length){c.innerHTML='<div class="empty-state"><div class="empty-icon">📋</div><h4>No transactions</h4><p>'+(filter==='all'?'Your transactions will appear here':'No '+filter+' transactions')+' </p></div>';return;}
     c.innerHTML=filtered.map(tx=>txHTML(tx)).join('');
@@ -2918,7 +2923,50 @@ async function loadHist(filter='all'){
 window.filterHist=(filter,el)=>{
   document.querySelectorAll('#histFilter .chip').forEach(c=>c.classList.remove('active'));
   el.classList.add('active');
+  const s=document.getElementById('histSearch');if(s)s.value='';
   loadHist(filter);
+};
+
+// ── SEARCH transactions already loaded in memory (no extra Firestore reads) ──
+window.searchHist=(term)=>{
+  const c=document.getElementById('histList');
+  if(!c||!_s.allTx)return;
+  term=(term||'').trim().toLowerCase();
+  const base=_s.curHistFilter&&_s.curHistFilter!=='all'
+    ?_s.allTx.filter(t=>t.type===_s.curHistFilter||(_s.curHistFilter==='fund'&&(t.type==='fund'||t.type==='fund_approved')))
+    :_s.allTx;
+  const results=!term?base:base.filter(t=>
+    (t.description||'').toLowerCase().includes(term)
+    ||(t.reference||'').toLowerCase().includes(term)
+    ||String(t.amount||'').includes(term)
+  );
+  if(!results.length){c.innerHTML='<div class="empty-state"><div class="empty-icon">🔍</div><h4>No matching transactions</h4><p>Try a different search term</p></div>';return;}
+  c.innerHTML=results.map(tx=>txHTML(tx)).join('');
+};
+
+// ── EXPORT transaction history as a CSV file ──
+window.exportHistoryCSV=()=>{
+  if(!_s.allTx||!_s.allTx.length)return showToast('error','No transactions to export yet');
+  const rows=[['Date','Type','Description','Amount (NGN)','Status','Reference']];
+  _s.allTx.forEach(t=>{
+    const d=t.createdAt?.toDate?t.createdAt.toDate():(t.createdAt?new Date(t.createdAt):null);
+    rows.push([
+      d?d.toLocaleString():'',
+      t.type||'',
+      (t.description||'').replace(/,/g,' '),
+      t.amount||0,
+      t.status||'',
+      t.reference||''
+    ]);
+  });
+  const csv=rows.map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
+  const blob=new Blob([csv],{type:'text/csv;charset=utf-8;'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url;a.download='NAIRARush_Transactions_'+new Date().toISOString().slice(0,10)+'.csv';
+  document.body.appendChild(a);a.click();document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  showToast('success','Transaction history exported');
 };
 async function checkPaystackKey(){const el=document.getElementById('paystackKeyStatus');if(!el)return;if(window._paystackKey&&window._paystackKey.startsWith('pk_')){el.innerHTML='<span style="color:var(--success-green)">✅ Paystack gateway ready</span>';return;}try{const snap=await getDoc(doc(db,'settings','apis'));const a=snap.exists()?snap.data():{};const key=a.paystackPub||a.paystackPublic||'';if(key&&key.startsWith('pk_')){window._paystackKey=key;el.innerHTML='<span style="color:var(--success-green)">✅ Paystack gateway ready</span>';}else{el.innerHTML='<span style="color:var(--danger)">⚠ Paystack key not set. Admin → API Management</span>';}}catch(e){el.innerHTML='<span style="color:var(--danger)">Gateway error</span>';}}
 window.initPaystackPayment=async()=>{const amount=parseFloat(document.getElementById('paystackAmount').value)||0;if(amount<100)return showToast('error','Minimum ₦100');if(!window._paystackKey||!window._paystackKey.startsWith('pk_')){await checkPaystackKey();}if(!window._paystackKey||!window._paystackKey.startsWith('pk_')){return showToast('error','Paystack not set up. Use Manual Transfer or contact admin.');}const email=_s.userData?.email||_s.user?.email;if(!email)return showToast('error','Please log in again');const ref='NRR'+Date.now()+genId(6);if(!window.PaystackPop){try{await new Promise((res,rej)=>{const sc=document.createElement('script');sc.src='https://js.paystack.co/v1/inline.js';sc.onload=res;sc.onerror=rej;document.head.appendChild(sc);});}catch(e){return showToast('error','Could not load Paystack. Check internet.');}}const onSuccess=async(reference)=>{
@@ -5080,6 +5128,30 @@ window.savePIN=async()=>{
     }
   }catch(e){showToast('error','Failed to save PIN');}
 };
+// ── RECEIVE MONEY (QR code + shareable account details) ──
+window.showReceiveSheet=()=>{
+  const d=_s.userData||{};
+  const acct=d.accountNumber||'—';
+  const name=((d.firstName||'')+' '+(d.lastName||'')).trim()||'NAIRARush User';
+  const payload=`NAIRARush Account\nName: ${name}\nAccount: ${acct}`;
+  const qrUrl='https://api.qrserver.com/v1/create-qr-code/?size=220x220&margin=8&data='+encodeURIComponent(payload);
+  showOverlay(`
+    <div class="sheet-title">📥 Receive Money</div>
+    <div style="text-align:center;padding:6px 0 14px">
+      <img src="${qrUrl}" alt="Account QR code" style="width:180px;height:180px;border-radius:14px;border:1px solid var(--border);background:#fff;padding:8px" onerror="this.style.display='none'">
+      <div style="margin-top:14px;background:var(--bg);border-radius:12px;padding:12px;text-align:left">
+        <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.5px">Account Name</div>
+        <div style="font-size:14px;font-weight:700;margin-bottom:8px">${name}</div>
+        <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.5px">Account Number</div>
+        <div style="font-size:16px;font-weight:700;letter-spacing:2px">${acct}</div>
+      </div>
+      <p style="font-size:11px;color:var(--text2);margin-top:10px;line-height:1.5">Share this QR code or account number so others can send you money on NAIRARush.</p>
+      <div style="display:flex;gap:8px;margin-top:14px">
+        <button class="btn btn-outline" style="flex:1" onclick="navigator.clipboard.writeText('${acct}').then(()=>showToast('success','Account number copied'))">📋 Copy Number</button>
+        <button class="btn btn-primary" style="flex:1" onclick="(navigator.share?navigator.share({title:'My NAIRARush Account',text:'${payload.replace(/\n/g,'\\n')}'}):navigator.clipboard.writeText(\`${payload}\`).then(()=>showToast('success','Details copied to share')))">📤 Share</button>
+      </div>
+    </div>`);
+};
 window.showWithdrawSheet=async()=>{
   // Load Nigerian banks from Paystack
   let bankOptions='<option value="">Select bank...</option>';
@@ -6653,6 +6725,18 @@ window.shareReferral = () => {
   else { navigator.clipboard?.writeText(text); showToast('success', 'Link copied!'); }
 };
 
+window.showReferralQR = () => {
+  const link = window._refLink || (window.location.origin + window.location.pathname.replace(/\/[^/]*$/, '/') + '?ref=' + (_s.userData?.referralCode || 'NRR00000'));
+  const qrUrl='https://api.qrserver.com/v1/create-qr-code/?size=220x220&margin=8&data='+encodeURIComponent(link);
+  showOverlay(`
+    <div class="sheet-title">▦ Your Referral QR</div>
+    <div style="text-align:center;padding:6px 0 14px">
+      <img src="${qrUrl}" alt="Referral QR code" style="width:180px;height:180px;border-radius:14px;border:1px solid var(--border);background:#fff;padding:8px" onerror="this.style.display='none'">
+      <p style="font-size:11px;color:var(--text2);margin-top:12px;line-height:1.5">Let a friend scan this to sign up with your referral code automatically.</p>
+      <button class="btn btn-primary" style="width:100%;margin-top:10px" onclick="copyRefLink()">📋 Copy Link Instead</button>
+    </div>`);
+};
+
 window.copyRefCode = () => {
   const code = document.getElementById('refCode')?.textContent || '';
   navigator.clipboard?.writeText(code);
@@ -7454,6 +7538,15 @@ if ('serviceWorker' in navigator) {
     });
   });
 }
+// ── Connectivity banner (independent of service worker support) ──
+function updateOnlineStatus(){
+  const b=document.getElementById('offlineBanner');
+  if(!b)return;
+  b.style.display=navigator.onLine?'none':'block';
+}
+window.addEventListener('online',()=>{updateOnlineStatus();showToast('success','Back online');});
+window.addEventListener('offline',()=>{updateOnlineStatus();showToast('error','You are offline');});
+updateOnlineStatus();
 </script>
 </body>
 </html>
