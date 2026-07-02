@@ -2105,7 +2105,7 @@ textarea.form-input{resize:none}
 </div>
 
 <!-- OVERLAY -->
-<div class="overlay" id="overlayMain" onclick="closeOverlay()">
+<div class="overlay" id="overlayMain" onclick="if(event.target===this){_s.resumeTxAfterPIN=false;closeOverlay()}">
   <div class="bottom-sheet" onclick="event.stopPropagation()">
     <div class="sheet-handle"></div>
     <div id="sheetContent"></div>
@@ -3336,6 +3336,14 @@ window.proceedToPIN=async(svc)=>{
     if(!kycOk)return;
   }
   document.getElementById('pinSummary').innerHTML=`<div class="sum-card" style="margin:0">${sum}</div>`;
+  // Every user — including Google sign-in, whose transactionPIN also starts empty —
+  // must set a 4-digit transaction PIN before their first transaction can proceed.
+  if(!_s.userData?.transactionPIN){
+    _s.resumeTxAfterPIN=true;
+    showToast('info','Please set a 4-digit transaction PIN to continue');
+    showChangePINSheet();
+    return;
+  }
   ['pin1','pin2','pin3','pin4'].forEach(id=>{const el=document.getElementById(id);if(el)el.value=''});
   navigateTo('pinScreen');setTimeout(()=>document.getElementById('pin1')?.focus(),300);
 };
@@ -5061,6 +5069,15 @@ window.savePIN=async()=>{
     await updateDoc(doc(db,'users',_s.user.uid),{transactionPIN:pin});
     if(_s.userData)_s.userData.transactionPIN=pin;
     showToast('success','PIN saved!');closeOverlay();
+    // If they were blocked from a transaction because no PIN existed yet, continue
+    // straight into entering that PIN to confirm the transaction now.
+    if(_s.resumeTxAfterPIN && _s.pendingData){
+      _s.resumeTxAfterPIN=false;
+      ['pin1','pin2','pin3','pin4'].forEach(id=>{const el=document.getElementById(id);if(el)el.value=''});
+      navigateTo('pinScreen');setTimeout(()=>document.getElementById('pin1')?.focus(),300);
+    }else{
+      _s.resumeTxAfterPIN=false;
+    }
   }catch(e){showToast('error','Failed to save PIN');}
 };
 window.showWithdrawSheet=async()=>{
@@ -6401,18 +6418,24 @@ async function checkTransactionLimit(amount) {
   const kycTier = d?.kycTier || 'unverified';
   const kycStatus = d?.kycStatus || 'unverified';
   const tierData = KYC_TIERS[kycTier] || KYC_TIERS.unverified;
+  const KYC_FREE_THRESHOLD = 20000; // transactions at/under this amount never require KYC
+  const kycDone = kycStatus === 'approved' && kycTier !== 'unverified';
 
-  if (kycStatus !== 'approved' || kycTier === 'unverified') {
-    showOverlay(`
-      <div class="sheet-title">🔒 KYC Required</div>
-      <div style="text-align:center;padding:10px 0 16px">
-        <div style="font-size:48px;margin-bottom:10px">🪪</div>
-        <p style="font-size:13px;color:var(--text2);line-height:1.5;margin-bottom:16px">
-          You need to complete KYC verification before making transactions. It takes just a few minutes.
-        </p>
-        <button class="btn btn-primary" onclick="closeOverlay();navigateTo('kycScreen')">Complete KYC Now</button>
-      </div>`);
-    return false;
+  if (!kycDone) {
+    if (amount > KYC_FREE_THRESHOLD) {
+      showOverlay(`
+        <div class="sheet-title">🔒 KYC Required</div>
+        <div style="text-align:center;padding:10px 0 16px">
+          <div style="font-size:48px;margin-bottom:10px">🪪</div>
+          <p style="font-size:13px;color:var(--text2);line-height:1.5;margin-bottom:16px">
+            Transactions above ₦${KYC_FREE_THRESHOLD.toLocaleString()} require KYC verification. Yours is ₦${Number(amount).toLocaleString()} — please verify your identity to continue. It takes just a few minutes.
+          </p>
+          <button class="btn btn-primary" onclick="closeOverlay();navigateTo('kycScreen')">Complete KYC Now</button>
+        </div>`);
+      return false;
+    }
+    // Amount is at/under the free threshold and KYC hasn't been done yet — let it through.
+    return true;
   }
 
   const todaySpent = await getTodaySpending();
