@@ -2921,7 +2921,46 @@ window.filterHist=(filter,el)=>{
   loadHist(filter);
 };
 async function checkPaystackKey(){const el=document.getElementById('paystackKeyStatus');if(!el)return;if(window._paystackKey&&window._paystackKey.startsWith('pk_')){el.innerHTML='<span style="color:var(--success-green)">✅ Paystack gateway ready</span>';return;}try{const snap=await getDoc(doc(db,'settings','apis'));const a=snap.exists()?snap.data():{};const key=a.paystackPub||a.paystackPublic||'';if(key&&key.startsWith('pk_')){window._paystackKey=key;el.innerHTML='<span style="color:var(--success-green)">✅ Paystack gateway ready</span>';}else{el.innerHTML='<span style="color:var(--danger)">⚠ Paystack key not set. Admin → API Management</span>';}}catch(e){el.innerHTML='<span style="color:var(--danger)">Gateway error</span>';}}
-window.initPaystackPayment=async()=>{const amount=parseFloat(document.getElementById('paystackAmount').value)||0;if(amount<100)return showToast('error','Minimum ₦100');if(!window._paystackKey||!window._paystackKey.startsWith('pk_')){await checkPaystackKey();}if(!window._paystackKey||!window._paystackKey.startsWith('pk_')){return showToast('error','Paystack not set up. Use Manual Transfer or contact admin.');}const email=_s.userData?.email||_s.user?.email;if(!email)return showToast('error','Please log in again');const ref='NRR'+Date.now()+genId(6);if(!window.PaystackPop){try{await new Promise((res,rej)=>{const sc=document.createElement('script');sc.src='https://js.paystack.co/v1/inline.js';sc.onload=res;sc.onerror=rej;document.head.appendChild(sc);});}catch(e){return showToast('error','Could not load Paystack. Check internet.');}}const onSuccess=async(reference)=>{showToast('info','Processing payment...');try{await updateDoc(doc(db,'users',_s.user.uid),{balance:increment(amount),totalFunded:increment(amount)});const txId=genId(12);await setDoc(doc(db,'transactions',txId),{id:txId,userId:_s.user.uid,type:'fund_approved',status:'success',amount,description:'Wallet Funded via Paystack',reference:reference,createdAt:serverTimestamp()});addNotif(_s.user.uid,'✅ Wallet Funded!','₦'+amount.toLocaleString()+' via Paystack','success').catch(()=>{});showToast('success','₦'+amount.toLocaleString()+' added to your wallet!');navigateTo('home');}catch(e){showToast('error','Payment done but credit failed. Ref: '+reference);}};try{const handler=window.PaystackPop.setup({key:window._paystackKey,email,amount:Math.round(amount*100),currency:'NGN',ref,channels:['card','bank','ussd','qr','mobile_money','bank_transfer'],callback:(resp)=>{onSuccess(resp.reference||ref);},onClose:()=>{showToast('info','Payment window closed');}});handler.openIframe();}catch(e){showToast('error','Paystack error: '+e.message);console.error(e);}};
+window.initPaystackPayment=async()=>{const amount=parseFloat(document.getElementById('paystackAmount').value)||0;if(amount<100)return showToast('error','Minimum ₦100');if(!window._paystackKey||!window._paystackKey.startsWith('pk_')){await checkPaystackKey();}if(!window._paystackKey||!window._paystackKey.startsWith('pk_')){return showToast('error','Paystack not set up. Use Manual Transfer or contact admin.');}const email=_s.userData?.email||_s.user?.email;if(!email)return showToast('error','Please log in again');const ref='NRR'+Date.now()+genId(6);if(!window.PaystackPop){try{await new Promise((res,rej)=>{const sc=document.createElement('script');sc.src='https://js.paystack.co/v1/inline.js';sc.onload=res;sc.onerror=rej;document.head.appendChild(sc);});}catch(e){return showToast('error','Could not load Paystack. Check internet.');}}const onSuccess=async(reference)=>{
+  showToast('info','Processing payment...');
+  try{
+    await updateDoc(doc(db,'users',_s.user.uid),{balance:increment(amount),totalFunded:increment(amount)});
+    const txId=genId(12);
+    await setDoc(doc(db,'transactions',txId),{id:txId,userId:_s.user.uid,type:'fund_approved',status:'success',amount,description:'Wallet Funded via Paystack',reference:reference,createdAt:serverTimestamp()});
+    addNotif(_s.user.uid,'✅ Wallet Funded!','₦'+amount.toLocaleString()+' via Paystack','success').catch(()=>{});
+    showToast('success','₦'+amount.toLocaleString()+' added to your wallet!');
+    navigateTo('home');
+  }catch(e){
+    // Log the *real* reason (this used to be swallowed). If you check the browser
+    // console here it will usually say "Missing or insufficient permissions" — that
+    // means your Firestore security rules block regular users from writing directly
+    // to their own balance/totalFunded fields. That's actually correct/safe behavior
+    // (otherwise anyone could credit their own wallet without paying); the fix is to
+    // credit balances from a trusted place (Cloud Function / admin), not to open up
+    // client write access to balance fields.
+    console.error('[paystack credit failed]',e.code||'',e.message);
+    // Safety net: the customer *did* pay Paystack successfully — never let that money
+    // disappear silently. File it the same way a manual bank transfer is filed, so it
+    // shows up in Admin → Funding Requests for one-tap approval.
+    try{
+      const reqId=genId(12);
+      await setDoc(doc(db,'fundingRequests',reqId),{
+        id:reqId,userId:_s.user.uid,
+        userEmail:_s.userData?.email||_s.user?.email||'',
+        userName:(_s.userData?.firstName||'')+' '+(_s.userData?.lastName||''),
+        senderName:'Paystack',amount,note:'Auto-filed: Paystack payment succeeded (ref '+reference+') but instant wallet credit was blocked. Verify with Paystack dashboard before approving.',
+        proofThumb:'',proofURL:'paystack:'+reference,
+        status:'pending',createdAt:serverTimestamp(),
+        reviewedAt:null,reviewedBy:null,
+        userAccountNo:_s.userData?.accountNumber||'-'
+      });
+      showToast('error','Payment succeeded but instant credit was blocked. Ref '+reference+' — it has been sent to admin for manual approval so your funds are safe.');
+    }catch(e2){
+      console.error('[paystack fallback filing failed]',e2.code||'',e2.message);
+      showToast('error','Payment done but credit failed. Ref: '+reference+'. Please contact support with this reference — do not attempt payment again.');
+    }
+  }
+};try{const handler=window.PaystackPop.setup({key:window._paystackKey,email,amount:Math.round(amount*100),currency:'NGN',ref,channels:['card','bank','ussd','qr','mobile_money','bank_transfer'],callback:(resp)=>{onSuccess(resp.reference||ref);},onClose:()=>{showToast('info','Payment window closed');}});handler.openIframe();}catch(e){showToast('error','Paystack error: '+e.message);console.error(e);}};
 
 
 window.goToFundStep2=()=>{
